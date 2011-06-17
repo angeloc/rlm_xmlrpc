@@ -197,7 +197,7 @@ static int xmlrpc_detach(void *instance)
 	
 	xmlrpc_env_clean(&inst->env);
 	xmlrpc_client_destroy(inst->clientP);
-	xmlrpc_client_teardown_global_const();
+	 xmlrpc_client_teardown_global_const();
 	 
 	free(inst);
 	return 0;
