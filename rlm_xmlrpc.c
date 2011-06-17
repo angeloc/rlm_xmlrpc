@@ -3,19 +3,19 @@
  *
  * Version:	$0.1$
  *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
+ *	This program is distributed in the hope that it will be useful,
+ *	but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *	GNU General Public License for more details.
  *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ *	You should have received a copy of the GNU General Public License
+ *	along with this program; if not, write to the Free Software
+ *	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * Copyright 2000,2006  The FreeRADIUS server project
  * Copyright 2011  Angelo Compagnucci <angelo.compagnucci@gmail.com>
@@ -56,8 +56,8 @@ int check_error(void *instance){
 		radlog(L_ERR, "rlm_xmlrpc: %s", env.fault_string);
 		DEBUG("rlm_xmlrpc: %s", env.fault_string);
 		return RLM_MODULE_FAIL;
-    }
-    return RLM_MODULE_OK;
+	 }
+	 return RLM_MODULE_OK;
 }
 
 /*
@@ -117,15 +117,15 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 	xmlrpc_env env;
 	env = data->env;
 	
-    xmlrpc_client_setup_global_const(&env);
-    xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, NULL, 0,
-                         &data->clientP);
-    error = check_error(data);
-    if (error != RLM_MODULE_OK) return error;
+	xmlrpc_client_setup_global_const(&env);
+	xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, NULL, 0,
+								 &data->clientP);
+	error = check_error(data);
+	if (error != RLM_MODULE_OK) return error;
 	
 	data->serverInfoP = xmlrpc_server_info_new(&env, data->url);
 	error = check_error(data);
-    if (error != RLM_MODULE_OK) return error;
+	if (error != RLM_MODULE_OK) return error;
 	
 	return 0;
 }
@@ -142,11 +142,11 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 	xmlrpc_value *array_param;
 	xmlrpc_value *array_string;
 	xmlrpc_value *resultP;
-    
-    char * const methodName = inst->method;
-    int error;
-    
-    VALUE_PAIR *status_type_pair;
+	 
+	char * const methodName = inst->method;
+	int error;
+	 
+	VALUE_PAIR *status_type_pair;
 	if ((status_type_pair = pairfind(request->packet->vps, PW_ACCT_STATUS_TYPE)) == NULL) {
 		radlog(L_ERR, "rlm_xmlrpc: No Accounting-Status-Type record.");
 		return RLM_MODULE_NOOP;
@@ -154,12 +154,12 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 	
 	array_param = xmlrpc_array_new(&env);
 	error = check_error(inst);
-    if (error != RLM_MODULE_OK) return error;
-    
+	if (error != RLM_MODULE_OK) return error;
+	 
 	array_string = xmlrpc_array_new(&env);
 	error = check_error(inst);
-    if (error != RLM_MODULE_OK) return error;
-    
+	if (error != RLM_MODULE_OK) return error;
+	 
 	VALUE_PAIR *vp = vps;
 	for( ; vp; vp = vp->next){
 		char buf[1024];
@@ -171,18 +171,18 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 	
 	xmlrpc_array_append_item(&env, array_param, array_string);
 	error = check_error(inst);
-    if (error != RLM_MODULE_OK) return error;
-    
-    xmlrpc_client_call2(&env, inst->clientP, inst->serverInfoP, methodName, 
+	if (error != RLM_MODULE_OK) return error;
+	 
+	xmlrpc_client_call2(&env, inst->clientP, inst->serverInfoP, methodName, 
 		array_param, &resultP);
-    error = check_error(inst);
-    if (error != RLM_MODULE_OK) return error;
-    
+	error = check_error(inst);
+	if (error != RLM_MODULE_OK) return error;
+	 
 	RDEBUG("rlm_xmlrpc: done");
 
-    xmlrpc_DECREF(resultP);
-    xmlrpc_DECREF(array_param);
-    xmlrpc_DECREF(array_string);
+	xmlrpc_DECREF(resultP);
+	xmlrpc_DECREF(array_param);
+	xmlrpc_DECREF(array_string);
 
 	return RLM_MODULE_OK;
 }
@@ -196,9 +196,9 @@ static int xmlrpc_detach(void *instance)
 	rlm_xmlrpc_t *inst = instance;
 	
 	xmlrpc_env_clean(&inst->env);
-    xmlrpc_client_destroy(inst->clientP);
-    xmlrpc_client_teardown_global_const();
-    
+	xmlrpc_client_destroy(inst->clientP);
+	xmlrpc_client_teardown_global_const();
+	 
 	free(inst);
 	return 0;
 }
