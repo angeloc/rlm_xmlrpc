@@ -43,21 +43,27 @@ RCSID("$Id$")
 typedef struct rlm_xmlrpc_t {
 	char				*url;
 	char				*method;
+	char				*interface;
 	int					count;
+	int 				no_ssl_verify_peer;
+	int					no_ssl_verify_host;
 	xmlrpc_server_info 	* serverInfoP;
 	xmlrpc_env 			env;
 	xmlrpc_client 		* clientP;
 } rlm_xmlrpc_t;
 
-int check_error(void *instance){
-	rlm_xmlrpc_t *inst = instance;
-	xmlrpc_env env = inst->env;
-	if (env.fault_occurred){
-		radlog(L_ERR, "rlm_xmlrpc: %s", env.fault_string);
-		DEBUG("rlm_xmlrpc: %s", env.fault_string);
+int check_error(xmlrpc_env *env){
+	if (!env){
+		radlog(L_ERR, "rlm_xmlrpc: xmlrpc env error");
+		DEBUG("rlm_xmlrpc: xmlrpc env error");
 		return RLM_MODULE_FAIL;
-	 }
-	 return RLM_MODULE_OK;
+	}
+	if (env->fault_occurred){
+		radlog(L_ERR, "rlm_xmlrpc: %s", env->fault_string);
+		DEBUG("rlm_xmlrpc: %s", env->fault_string);
+		return RLM_MODULE_FAIL;
+	}
+	return RLM_MODULE_OK;
 }
 
 /*
@@ -72,6 +78,9 @@ int check_error(void *instance){
 static const CONF_PARSER module_config[] = {
   { "url",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,url), NULL,  NULL},
   { "method",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,method), NULL,  NULL},
+  { "interface",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,interface), NULL,  "lo"},
+  { "no_ssl_verify_peer",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_peer), NULL,  "yes"},
+  { "no_ssl_verify_host",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_host), NULL,  "yes"},
 
   { NULL, -1, 0, NULL, NULL }		/* end the list */
 };
@@ -91,6 +100,9 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 {
 	rlm_xmlrpc_t *data;
 	int error;
+	
+	struct xmlrpc_clientparms clientParms;
+	struct xmlrpc_curl_xportparms curlParms;
 
 	/*
 	 *	Set up a storage area for instance data
@@ -112,19 +124,37 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 
 	*instance = data;
 	
+	/*
+	 * Setup env variable for error data
+	 */
+	
 	xmlrpc_env_init(&data->env);
 	
 	xmlrpc_env env;
 	env = data->env;
 	
+	/*
+	 * Setup parameters for connection to insecure https,
+	 * if found in config variables
+	 */
+	
+	curlParms.network_interface = data->interface;
+	curlParms.no_ssl_verifypeer = data->no_ssl_verify_peer;
+	curlParms.no_ssl_verifyhost = data->no_ssl_verify_host;
+	
+	clientParms.transport       = "curl";
+	clientParms.transportparmsP = &curlParms;
+	clientParms.transportparm_size = XMLRPC_CXPSIZE(no_ssl_verifyhost);
+
 	xmlrpc_client_setup_global_const(&env);
-	xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, NULL, 0,
-								 &data->clientP);
-	error = check_error(data);
+	xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, 
+			&clientParms, XMLRPC_CPSIZE(transportparm_size), &data->clientP);
+			
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
 	
 	data->serverInfoP = xmlrpc_server_info_new(&env, data->url);
-	error = check_error(data);
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
 	
 	return 0;
@@ -152,33 +182,47 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 		return RLM_MODULE_NOOP;
 	}
 	
+	/*
+	 * Xmlrpc wants method params in an array, so we build an array
+	 * with a pointer in index 0. This pointer contains a sub array
+	 * filled whith strings each one for packet attributes.
+	 */
 	array_param = xmlrpc_array_new(&env);
-	error = check_error(inst);
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
 	 
 	array_string = xmlrpc_array_new(&env);
-	error = check_error(inst);
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
-	 
+	
+	/*
+	 * The array of strings is built whit vp_prints
+	 */
 	VALUE_PAIR *vp = vps;
 	for( ; vp; vp = vp->next){
 		char buf[1024];
 		vp_prints(buf, sizeof(buf), vp);
 		xmlrpc_array_append_item(&env, array_string, xmlrpc_string_new(&env, buf));
-		int error = check_error(inst);
+		int error = check_error(&env);
 		if (error != RLM_MODULE_OK) return error;
 	}
 	
 	xmlrpc_array_append_item(&env, array_param, array_string);
-	error = check_error(inst);
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
 	 
 	xmlrpc_client_call2(&env, inst->clientP, inst->serverInfoP, methodName, 
 		array_param, &resultP);
-	error = check_error(inst);
+	error = check_error(&env);
 	if (error != RLM_MODULE_OK) return error;
 	 
 	RDEBUG("rlm_xmlrpc: done");
+	
+	/*
+	 * We don't check for method return value. If an accounting packet is
+	 * dispatched without errors, it should be processed by server 
+	 * without any further notification.
+	 */
 
 	xmlrpc_DECREF(resultP);
 	xmlrpc_DECREF(array_param);
@@ -197,7 +241,7 @@ static int xmlrpc_detach(void *instance)
 	
 	xmlrpc_env_clean(&inst->env);
 	xmlrpc_client_destroy(inst->clientP);
-	 xmlrpc_client_teardown_global_const();
+	xmlrpc_client_teardown_global_const();
 	 
 	free(inst);
 	return 0;
