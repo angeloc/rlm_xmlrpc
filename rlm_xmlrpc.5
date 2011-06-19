@@ -1,0 +1,70 @@
+.\"     # DS - begin display
+.de DS
+.RS
+.nf
+.sp
+..
+.\"     # DE - end display
+.de DE
+.fi
+.RE
+.sp
+..
+.TH rlm_xmlrpc 5 "19 June 2011" "" "FreeRADIUS Module"
+.SH NAME
+rlm_xmlrpc \- FreeRADIUS Module
+.SH DESCRIPTION
+The \fIrlm_xmlrpc\fP module sends accounting packets to an xmlrpc server.
+The module uses the famous xmlprc_c library with the culr transport.
+.PP
+The \fIrlm_xmlrpc\fP module accepts to talk to http or https server. For the
+latter you have the option to ignore insecure certificates and peer, so it
+could be used without owning a valid certificate.
+If the options no_ssl_verify_peer no_ssl_verify_host are set to yes (default) 
+the module will ignore certificate validity. 
+.PP
+The module sends the contents of a radius packet as an array of strings.
+This array is the only parameter that should be accepted by the xmlrpc server.
+The module doesn't split a radius attribute, splitting the attribute in the 
+Name-operand-value form will have tripled xml tags making the http request
+too fat and difficult to process.
+Programmers should tokenize the string on the server side or 
+apply a regular expression.
+.PP
+The main configuration items to be aware of are:
+.IP url
+The url that exposes the callable method.
+.IP method
+The method to be called.
+.SH CONFIGURATION
+.PP
+.DS
+modules {
+  ...
+.br
+  xmlrpc {
+.br
+    url = https://127.0.0.1:8000/xmlrpc
+    method = account
+    interface = eth0
+    no_ssl_verify_peer = yes
+    no_ssl_verify_host = yes
+.br
+  }
+.br
+  ...
+.br
+}
+.DE
+.PP
+.SH SECTIONS
+.BR accounting
+.PP
+.SH FILES
+.I /etc/freeradius/modules/xmlrpc,
+.PP
+.SH "SEE ALSO"
+.BR radiusd (8),
+.BR radiusd.conf (5)
+.SH AUTHORS
+Angelo Compagnucci, angelo.compagnucci@gmail.com

@@ -1,3 +1,41 @@
 rlm_xmlrpc: A module for xmplrpc accounting in freeradius
 
+INTRODUCTION
+
+Have you ever wanted to trigger an action real time when the user logs in or logs off in freeradius?
+This module born to solve this problem in a message passing fashion using the xmlrpc tecnology 
+really common to web application.
+
+With this module you can write a custom application that exposes an xmlrpc method as an entry point 
+for radius accounting packets. This way you can trigger an event on your webservice at the same
+time freeradius processes accounting packets.
+
+This module is based on the excellent xmlrpc_c library, using curl as the transport layer. Curl
+supports http and https and uses persistent connections to speed up communications.
+The rlm_xmlrpc module accepts to talk to http or https server. For the latter you have the option to ignore 
+insecure  certificates  and peer, so it could be used without owning a valid certificate.  If the options 
+no_ssl_verify_peer no_ssl_verify_host are set to yes (default) the module will ignore certificate validity.
+
+
+WRITING AN XMLRPC METHOD
+
+You can write an xmlrpc method whit your preferred technology. Xmlrpc is supported by all major 
+programming languages and it's really simple to use.
+
+Your method should accept only a parameter which will be an array of string. The rlm_xmlrpc module
+cycle each radius accounting packet attribute and for each one, it produces a string with all
+attribute details (name, operand, value, etc ...). The rlm_xmlrpc module appends the strings to
+an array that will be the only one parameter accepted by your method.
+
+You have to cycle the array and search for the attribute you are looking for.
+
+The rlm_xmlrpc module doesn't check for method return value. If an accounting packet is
+dispatched via xmlrpc without errors, it must be processed by server without any further notification.
+If you want notify the server about a problem or an error condition, you have to use an xmlrpc
+error condition. Please read the documentation provided with the library you are using.
+Terminate your method as soon as possible, freeradius wait for the method to complete prior
+processing another packet. Your method should pass the array to another non blocking method and return
+as soon as possible.
+  
+
 Author: Angelo Compagnucci <angelo.compagnucci@gmail.com>
