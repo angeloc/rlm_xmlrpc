@@ -40,16 +40,23 @@ RCSID("$Id$")
  *	a lot cleaner to do so, and a pointer to the structure can
  *	be used as the instance handle.
  */
+
+typedef struct rlm_xmlrpc_client_t {
+	xmlrpc_server_info 			* serverInfoP;
+	xmlrpc_env 					  env;
+	xmlrpc_client 				* clientP;
+	struct rlm_xmlrpc_client_t	* next;
+} rlm_xmlrpc_client_t;
+ 
 typedef struct rlm_xmlrpc_t {
-	char				*url;
-	char				*method;
-	char				*interface;
-	int					count;
-	int 				no_ssl_verify_peer;
-	int					no_ssl_verify_host;
-	xmlrpc_server_info 	* serverInfoP;
-	xmlrpc_env 			env;
-	xmlrpc_client 		* clientP;
+	char				* url;
+	char				* method;
+	char				* interface;
+	int 				  no_ssl_verify_peer;
+	int					  no_ssl_verify_host;
+	int					  xmlrpc_num_socks;
+	rlm_xmlrpc_client_t * client;
+	pthread_mutex_t 	  client_mutex;
 } rlm_xmlrpc_t;
 
 int check_error(xmlrpc_env *env){
@@ -64,6 +71,15 @@ int check_error(xmlrpc_env *env){
 		return RLM_MODULE_FAIL;
 	}
 	return RLM_MODULE_OK;
+}
+
+rlm_xmlrpc_client_t * get_client(rlm_xmlrpc_t *instance){
+	rlm_xmlrpc_client_t * client;
+	pthread_mutex_lock(&instance->client_mutex);
+	client = instance->client;
+	instance->client = instance->client->next;
+	pthread_mutex_unlock(&instance->client_mutex);
+	return client;
 }
 
 /*
@@ -81,7 +97,8 @@ static const CONF_PARSER module_config[] = {
   { "interface",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,interface), NULL,  "lo"},
   { "no_ssl_verify_peer",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_peer), NULL,  "yes"},
   { "no_ssl_verify_host",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_host), NULL,  "yes"},
-
+  { "xmlrpc_num_socks",  PW_TYPE_INTEGER, offsetof(rlm_xmlrpc_t,xmlrpc_num_socks), NULL,  "5"},
+  
   { NULL, -1, 0, NULL, NULL }		/* end the list */
 };
 
@@ -98,12 +115,17 @@ static const CONF_PARSER module_config[] = {
  */
 static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 {
-	rlm_xmlrpc_t *data;
-	int error;
+	rlm_xmlrpc_t 		* data;
+	rlm_xmlrpc_client_t * first_client;
+	rlm_xmlrpc_client_t * client;
+	
+	xmlrpc_env 			env;
 	
 	struct xmlrpc_clientparms clientParms;
 	struct xmlrpc_curl_xportparms curlParms;
-
+	
+	int i, error;
+	
 	/*
 	 *	Set up a storage area for instance data
 	 */
@@ -124,38 +146,52 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 
 	*instance = data;
 	
-	/*
-	 * Setup env variable for error data
-	 */
-	
-	xmlrpc_env_init(&data->env);
-	
-	xmlrpc_env env;
-	env = data->env;
-	
-	/*
-	 * Setup parameters for connection to insecure https,
-	 * if found in config variables
-	 */
+	pthread_mutex_init(&data->client_mutex, NULL);
 	
 	curlParms.network_interface = data->interface;
 	curlParms.no_ssl_verifypeer = data->no_ssl_verify_peer;
 	curlParms.no_ssl_verifyhost = data->no_ssl_verify_host;
-	
+
 	clientParms.transport       = "curl";
 	clientParms.transportparmsP = &curlParms;
 	clientParms.transportparm_size = XMLRPC_CXPSIZE(no_ssl_verifyhost);
 
-	xmlrpc_client_setup_global_const(&env);
-	xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, 
-			&clientParms, XMLRPC_CPSIZE(transportparm_size), &data->clientP);
-			
-	error = check_error(&env);
-	if (error != RLM_MODULE_OK) return error;
+	for(i=0; i<data->xmlrpc_num_socks; i++){
+		client = rad_malloc(sizeof(*client));
+		if (!client) {
+			return -1;
+		}
+		memset(client, 0, sizeof(*client));
+		
+		env = client->env;
+		xmlrpc_env_init(&env);
+		
+		if (i == 0) {
+			data->client = client;
+			first_client = client;
+
+			xmlrpc_client_setup_global_const(&env);
+		} else {
+			data->client->next = client;
+			data->client = data->client->next;		
+		}
+		
+		xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, 
+				&clientParms, XMLRPC_CPSIZE(transportparm_size), &client->clientP);
+				
+		error = check_error(&env);
+		if (error != RLM_MODULE_OK) return error;
+		
+		client->serverInfoP = xmlrpc_server_info_new(&env, data->url);
+		error = check_error(&env);
+		if (error != RLM_MODULE_OK) return error;
+		
+		radlog(L_INFO, "\trlm_xmlrpc: client #%d initialized", i);
+		
+	}
 	
-	data->serverInfoP = xmlrpc_server_info_new(&env, data->url);
-	error = check_error(&env);
-	if (error != RLM_MODULE_OK) return error;
+	data->client->next = first_client;
+	data->client = data->client->next;
 	
 	return 0;
 }
@@ -165,16 +201,18 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
  */
 static int xmlrpc_accounting(void *instance, REQUEST *request)
 {
-	rlm_xmlrpc_t *inst = instance;
-	VALUE_PAIR *vps = request->packet->vps;
-	xmlrpc_env env = inst->env;
+	rlm_xmlrpc_t		* inst = instance;
+	rlm_xmlrpc_client_t * client;
+	VALUE_PAIR 			* vps = request->packet->vps;
 	
-	xmlrpc_value *array_param;
-	xmlrpc_value *array_string;
-	xmlrpc_value *resultP;
+	xmlrpc_value 		* array_param;
+	xmlrpc_value 		* array_string;
+	xmlrpc_value 		* resultP;
 	 
 	char * const methodName = inst->method;
 	int error;
+	
+	client = get_client(instance);
 	 
 	VALUE_PAIR *status_type_pair;
 	if ((status_type_pair = pairfind(request->packet->vps, PW_ACCT_STATUS_TYPE)) == NULL) {
@@ -182,17 +220,19 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 		return RLM_MODULE_NOOP;
 	}
 	
+	pairfree(&status_type_pair);
+	
 	/*
 	 * Xmlrpc wants method params in an array, so we build an array
 	 * with a pointer in index 0. This pointer contains a sub array
 	 * filled whith strings each one for packet attributes.
 	 */
-	array_param = xmlrpc_array_new(&env);
-	error = check_error(&env);
+	array_param = xmlrpc_array_new(&client->env);
+	error = check_error(&client->env);
 	if (error != RLM_MODULE_OK) return error;
 	 
-	array_string = xmlrpc_array_new(&env);
-	error = check_error(&env);
+	array_string = xmlrpc_array_new(&client->env);
+	error = check_error(&client->env);
 	if (error != RLM_MODULE_OK) return error;
 	
 	/*
@@ -202,21 +242,20 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 	for( ; vp; vp = vp->next){
 		char buf[1024];
 		vp_prints(buf, sizeof(buf), vp);
-		xmlrpc_array_append_item(&env, array_string, xmlrpc_string_new(&env, buf));
-		int error = check_error(&env);
+		xmlrpc_array_append_item(&client->env, array_string, 
+				xmlrpc_string_new(&client->env, buf));
+		int error = check_error(&client->env);
 		if (error != RLM_MODULE_OK) return error;
 	}
 	
-	xmlrpc_array_append_item(&env, array_param, array_string);
-	error = check_error(&env);
+	xmlrpc_array_append_item(&client->env, array_param, array_string);
+	error = check_error(&client->env);
 	if (error != RLM_MODULE_OK) return error;
 	 
-	xmlrpc_client_call2(&env, inst->clientP, inst->serverInfoP, methodName, 
+	xmlrpc_client_call2(&client->env, client->clientP, client->serverInfoP, methodName, 
 		array_param, &resultP);
-	error = check_error(&env);
+	error = check_error(&client->env);
 	if (error != RLM_MODULE_OK) return error;
-	 
-	RDEBUG("rlm_xmlrpc: done");
 	
 	/*
 	 * We don't check for method return value. If an accounting packet is
@@ -239,11 +278,37 @@ static int xmlrpc_detach(void *instance)
 {
 	rlm_xmlrpc_t *inst = instance;
 	
-	xmlrpc_env_clean(&inst->env);
-	xmlrpc_client_destroy(inst->clientP);
-	xmlrpc_client_teardown_global_const();
-	 
+	rlm_xmlrpc_client_t * next;
+	rlm_xmlrpc_client_t * cur;
+	
+	int i;
+	
+	cur = inst->client;
+	
+	for(i=0; i<inst->xmlrpc_num_socks; i++){
+		if (cur && cur->next) {
+			next = cur->next;
+			xmlrpc_env_clean(&cur->env);
+			xmlrpc_server_info_free(cur->serverInfoP);
+			xmlrpc_client_destroy(cur->clientP);
+			free(cur);
+			cur = next;
+		} else 
+		if (cur && !cur->next){
+			xmlrpc_env_clean(&cur->env);
+			xmlrpc_server_info_free(cur->serverInfoP);
+			xmlrpc_client_destroy(cur->clientP);
+			free(cur);
+		} else {
+			DEBUG("Error freeing xmlrpc module");
+			return -1;
+		}
+		xmlrpc_client_teardown_global_const();
+	}
+	
+	pthread_mutex_destroy(&inst->client_mutex);
 	free(inst);
+	
 	return 0;
 }
 
