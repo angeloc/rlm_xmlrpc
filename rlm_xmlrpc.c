@@ -23,16 +23,12 @@
 
 #include <freeradius/ident.h>
 RCSID("$Id$")
-
 #include <freeradius/radiusd.h>
 #include <freeradius/modules.h>
-
 #include <xmlrpc-c/base.h>
 #include <xmlrpc-c/client.h>
-
 #define NAME "Freeradius rlm_xmlrpc"
 #define VERSION "0.1"
-
 /*
  *	Define a structure for our module configuration.
  *
@@ -40,32 +36,35 @@ RCSID("$Id$")
  *	a lot cleaner to do so, and a pointer to the structure can
  *	be used as the instance handle.
  */
-
 typedef struct rlm_xmlrpc_client_t {
-	xmlrpc_server_info 			* serverInfoP;
-	xmlrpc_env 					  env;
-	xmlrpc_client 				* clientP;
-	struct rlm_xmlrpc_client_t	* next;
+	xmlrpc_server_info *serverInfoP;
+	xmlrpc_env env;
+	xmlrpc_client *clientP;
+	struct rlm_xmlrpc_client_t *next;
 } rlm_xmlrpc_client_t;
- 
+
 typedef struct rlm_xmlrpc_t {
-	char				* url;
-	char				* method;
-	char				* interface;
-	int 				  no_ssl_verify_peer;
-	int					  no_ssl_verify_host;
-	int					  xmlrpc_num_socks;
-	rlm_xmlrpc_client_t * client;
-	pthread_mutex_t 	  client_mutex;
+	char *url;
+	char *method;
+	char *interface;
+	char *auth_type;
+	char *user;
+	char *password;
+	int no_ssl_verify_peer;
+	int no_ssl_verify_host;
+	int xmlrpc_num_socks;
+	rlm_xmlrpc_client_t *client;
+	pthread_mutex_t client_mutex;
 } rlm_xmlrpc_t;
 
-int check_error(xmlrpc_env *env){
-	if (!env){
+int check_error(xmlrpc_env * env)
+{
+	if (!env) {
 		radlog(L_ERR, "rlm_xmlrpc: xmlrpc env error");
 		DEBUG("rlm_xmlrpc: xmlrpc env error");
 		return RLM_MODULE_FAIL;
 	}
-	if (env->fault_occurred){
+	if (env->fault_occurred) {
 		radlog(L_ERR, "rlm_xmlrpc: %s", env->fault_string);
 		DEBUG("rlm_xmlrpc: %s", env->fault_string);
 		return RLM_MODULE_FAIL;
@@ -73,8 +72,9 @@ int check_error(xmlrpc_env *env){
 	return RLM_MODULE_OK;
 }
 
-rlm_xmlrpc_client_t * get_client(rlm_xmlrpc_t *instance){
-	rlm_xmlrpc_client_t * client;
+rlm_xmlrpc_client_t *get_client(rlm_xmlrpc_t * instance)
+{
+	rlm_xmlrpc_client_t *client;
 	pthread_mutex_lock(&instance->client_mutex);
 	client = instance->client;
 	instance->client = instance->client->next;
@@ -92,16 +92,18 @@ rlm_xmlrpc_client_t * get_client(rlm_xmlrpc_t *instance){
  *	buffer over-flows.
  */
 static const CONF_PARSER module_config[] = {
-  { "url",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,url), NULL,  NULL},
-  { "method",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,method), NULL,  NULL},
-  { "interface",  PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t,interface), NULL,  "lo"},
-  { "no_ssl_verify_peer",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_peer), NULL,  "yes"},
-  { "no_ssl_verify_host",  PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t,no_ssl_verify_host), NULL,  "yes"},
-  { "xmlrpc_num_socks",  PW_TYPE_INTEGER, offsetof(rlm_xmlrpc_t,xmlrpc_num_socks), NULL,  "5"},
-  
-  { NULL, -1, 0, NULL, NULL }		/* end the list */
-};
+	{"url", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, url), NULL, NULL},
+	{"method", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, method), NULL, NULL},
+	{"interface", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, interface), NULL, "lo"},
+	{"no_ssl_verify_peer", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_peer), NULL, "yes"},
+	{"no_ssl_verify_host", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_host), NULL, "yes"},
+	{"xmlrpc_num_socks", PW_TYPE_INTEGER, offsetof(rlm_xmlrpc_t, xmlrpc_num_socks), NULL, "5"},
+	{"auth_type", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, auth_type), NULL, "none"},
+	{"user", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, user), NULL, NULL},
+	{"password", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, password), NULL, NULL},
 
+	{NULL, -1, 0, NULL, NULL}	/* end the list */
+};
 
 /*
  *	Do any per-module initialization that is separate to each
@@ -113,21 +115,22 @@ static const CONF_PARSER module_config[] = {
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
+static int xmlrpc_instantiate(CONF_SECTION * conf, void **instance)
 {
-	rlm_xmlrpc_t 		* data;
-	rlm_xmlrpc_client_t * first_client;
-	rlm_xmlrpc_client_t * client;
-	
-	xmlrpc_env 			env;
-	
+	rlm_xmlrpc_t *data;
+	rlm_xmlrpc_client_t *first_client;
+	rlm_xmlrpc_client_t *client;
+
+	xmlrpc_env env;
+
 	struct xmlrpc_clientparms clientParms;
 	struct xmlrpc_curl_xportparms curlParms;
-	
+
 	int i, error;
-	
+	void (*do_auth) ();
+
 	/*
-	 *	Set up a storage area for instance data
+	 *      Set up a storage area for instance data
 	 */
 	data = rad_malloc(sizeof(*data));
 	if (!data) {
@@ -136,8 +139,8 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 	memset(data, 0, sizeof(*data));
 
 	/*
-	 *	If the configuration parameters can't be parsed, then
-	 *	fail.
+	 *      If the configuration parameters can't be parsed, then
+	 *      fail.
 	 */
 	if (cf_section_parse(conf, data, module_config) < 0) {
 		free(data);
@@ -145,27 +148,37 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 	}
 
 	*instance = data;
-	
+
 	pthread_mutex_init(&data->client_mutex, NULL);
-	
+
 	curlParms.network_interface = data->interface;
 	curlParms.no_ssl_verifypeer = data->no_ssl_verify_peer;
 	curlParms.no_ssl_verifyhost = data->no_ssl_verify_host;
 
-	clientParms.transport       = "curl";
+	clientParms.transport = "curl";
 	clientParms.transportparmsP = &curlParms;
 	clientParms.transportparm_size = XMLRPC_CXPSIZE(no_ssl_verifyhost);
 
-	for(i=0; i<data->xmlrpc_num_socks; i++){
+	if (strcmp(data->auth_type, "auth_basic") == 0) {
+		do_auth = xmlrpc_server_info_allow_auth_basic;
+	} else if (strcmp(data->auth_type, "auth_digest") == 0) {
+		do_auth = xmlrpc_server_info_allow_auth_digest;
+	} else if (strcmp(data->auth_type, "auth_negotiate") == 0) {
+		do_auth = xmlrpc_server_info_allow_auth_negotiate;
+	} else if (strcmp(data->auth_type, "auth_ntlm") == 0) {
+		do_auth = xmlrpc_server_info_allow_auth_ntlm;
+	}
+
+	for (i = 0; i < data->xmlrpc_num_socks; i++) {
 		client = rad_malloc(sizeof(*client));
 		if (!client) {
 			return -1;
 		}
 		memset(client, 0, sizeof(*client));
-		
+
 		env = client->env;
 		xmlrpc_env_init(&env);
-		
+
 		if (i == 0) {
 			data->client = client;
 			first_client = client;
@@ -173,55 +186,69 @@ static int xmlrpc_instantiate(CONF_SECTION *conf, void **instance)
 			xmlrpc_client_setup_global_const(&env);
 		} else {
 			data->client->next = client;
-			data->client = data->client->next;		
+			data->client = data->client->next;
 		}
-		
-		xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION, 
-				&clientParms, XMLRPC_CPSIZE(transportparm_size), &client->clientP);
-				
+
+		xmlrpc_client_create(&env, XMLRPC_CLIENT_NO_FLAGS, NAME,
+				     VERSION, &clientParms,
+				     XMLRPC_CPSIZE(transportparm_size), &client->clientP);
+
 		error = check_error(&env);
-		if (error != RLM_MODULE_OK) return error;
-		
+		if (error != RLM_MODULE_OK)
+			return error;
+
 		client->serverInfoP = xmlrpc_server_info_new(&env, data->url);
 		error = check_error(&env);
-		if (error != RLM_MODULE_OK) return error;
-		
+		if (error != RLM_MODULE_OK)
+			return error;
+
+		if (strcmp(data->auth_type, "none") != 0) {
+			xmlrpc_server_info_set_user(&env, client->serverInfoP,
+						    data->user, data->password);
+			error = check_error(&env);
+			if (error != RLM_MODULE_OK)
+				return error;
+
+			do_auth(&env, client->serverInfoP);
+			error = check_error(&env);
+			if (error != RLM_MODULE_OK)
+				return error;
+		}
+
 		radlog(L_INFO, "\trlm_xmlrpc: client #%d initialized", i);
-		
+
 	}
-	
+
 	data->client->next = first_client;
 	data->client = data->client->next;
-	
+
 	return 0;
 }
 
 /*
  *	Write accounting information to this modules database.
  */
-static int xmlrpc_accounting(void *instance, REQUEST *request)
+static int xmlrpc_accounting(void *instance, REQUEST * request)
 {
-	rlm_xmlrpc_t		* inst = instance;
-	rlm_xmlrpc_client_t * client;
-	VALUE_PAIR 			* vps = request->packet->vps;
-	
-	xmlrpc_value 		* array_param;
-	xmlrpc_value 		* array_string;
-	xmlrpc_value 		* resultP;
-	 
-	char * const methodName = inst->method;
+	rlm_xmlrpc_t *inst = instance;
+	rlm_xmlrpc_client_t *client;
+	VALUE_PAIR *vps = request->packet->vps;
+
+	xmlrpc_value *array_param;
+	xmlrpc_value *array_string;
+	xmlrpc_value *resultP;
+
+	char *const methodName = inst->method;
 	int error;
-	
+
 	client = get_client(instance);
-	 
+
 	VALUE_PAIR *status_type_pair;
 	if ((status_type_pair = pairfind(request->packet->vps, PW_ACCT_STATUS_TYPE)) == NULL) {
 		radlog(L_ERR, "rlm_xmlrpc: No Accounting-Status-Type record.");
 		return RLM_MODULE_NOOP;
 	}
-	
-	pairfree(&status_type_pair);
-	
+
 	/*
 	 * Xmlrpc wants method params in an array, so we build an array
 	 * with a pointer in index 0. This pointer contains a sub array
@@ -229,34 +256,39 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 	 */
 	array_param = xmlrpc_array_new(&client->env);
 	error = check_error(&client->env);
-	if (error != RLM_MODULE_OK) return error;
-	 
+	if (error != RLM_MODULE_OK)
+		return error;
+
 	array_string = xmlrpc_array_new(&client->env);
 	error = check_error(&client->env);
-	if (error != RLM_MODULE_OK) return error;
-	
+	if (error != RLM_MODULE_OK)
+		return error;
+
 	/*
 	 * The array of strings is built whit vp_prints
 	 */
 	VALUE_PAIR *vp = vps;
-	for( ; vp; vp = vp->next){
+	for (; vp; vp = vp->next) {
 		char buf[1024];
 		vp_prints(buf, sizeof(buf), vp);
-		xmlrpc_array_append_item(&client->env, array_string, 
-				xmlrpc_string_new(&client->env, buf));
+		xmlrpc_array_append_item(&client->env, array_string,
+					 xmlrpc_string_new(&client->env, buf));
 		int error = check_error(&client->env);
-		if (error != RLM_MODULE_OK) return error;
+		if (error != RLM_MODULE_OK)
+			return error;
 	}
-	
+
 	xmlrpc_array_append_item(&client->env, array_param, array_string);
 	error = check_error(&client->env);
-	if (error != RLM_MODULE_OK) return error;
-	 
-	xmlrpc_client_call2(&client->env, client->clientP, client->serverInfoP, methodName, 
-		array_param, &resultP);
+	if (error != RLM_MODULE_OK)
+		return error;
+
+	xmlrpc_client_call2(&client->env, client->clientP, client->serverInfoP,
+			    methodName, array_param, &resultP);
 	error = check_error(&client->env);
-	if (error != RLM_MODULE_OK) return error;
-	
+	if (error != RLM_MODULE_OK)
+		return error;
+
 	/*
 	 * We don't check for method return value. If an accounting packet is
 	 * dispatched without errors, it should be processed by server 
@@ -277,15 +309,15 @@ static int xmlrpc_accounting(void *instance, REQUEST *request)
 static int xmlrpc_detach(void *instance)
 {
 	rlm_xmlrpc_t *inst = instance;
-	
-	rlm_xmlrpc_client_t * next;
-	rlm_xmlrpc_client_t * cur;
-	
+
+	rlm_xmlrpc_client_t *next;
+	rlm_xmlrpc_client_t *cur;
+
 	int i;
-	
+
 	cur = inst->client;
-	
-	for(i=0; i<inst->xmlrpc_num_socks; i++){
+
+	for (i = 0; i < inst->xmlrpc_num_socks; i++) {
 		if (cur && cur->next) {
 			next = cur->next;
 			xmlrpc_env_clean(&cur->env);
@@ -293,8 +325,7 @@ static int xmlrpc_detach(void *instance)
 			xmlrpc_client_destroy(cur->clientP);
 			free(cur);
 			cur = next;
-		} else 
-		if (cur && !cur->next){
+		} else if (cur && !cur->next) {
 			xmlrpc_env_clean(&cur->env);
 			xmlrpc_server_info_free(cur->serverInfoP);
 			xmlrpc_client_destroy(cur->clientP);
@@ -305,10 +336,10 @@ static int xmlrpc_detach(void *instance)
 		}
 		xmlrpc_client_teardown_global_const();
 	}
-	
+
 	pthread_mutex_destroy(&inst->client_mutex);
 	free(inst);
-	
+
 	return 0;
 }
 
@@ -324,17 +355,18 @@ static int xmlrpc_detach(void *instance)
 module_t rlm_xmlrpc = {
 	RLM_MODULE_INIT,
 	"xmlrpc",
-	RLM_TYPE_THREAD_SAFE,		/* type */
-	xmlrpc_instantiate,		/* instantiation */
-	xmlrpc_detach,			/* detach */
+	RLM_TYPE_THREAD_SAFE,	/* type */
+	xmlrpc_instantiate,	/* instantiation */
+	xmlrpc_detach,		/* detach */
 	{
-		NULL,	/* authentication */
-		NULL,	/* authorization */
-		NULL,	/* preaccounting */
-		xmlrpc_accounting,	/* accounting */
-		NULL,	/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
-	},
+	 NULL,			/* authentication */
+	 NULL,			/* authorization */
+	 NULL,			/* preaccounting */
+	 xmlrpc_accounting,	/* accounting */
+	 NULL,			/* checksimul */
+	 NULL,			/* pre-proxy */
+	 NULL,			/* post-proxy */
+	 NULL			/* post-auth */
+	 }
+	,
 };
