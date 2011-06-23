@@ -18,24 +18,37 @@ The \fIrlm_xmlrpc\fP module sends accounting packets to an xmlrpc server.
 The module uses the famous xmlprc_c library with the culr transport.
 .PP
 The \fIrlm_xmlrpc\fP module accepts to talk to http or https server. For the
-latter you have the option to ignore insecure certificates and peer, so it
-could be used without owning a valid certificate.
-If the options no_ssl_verify_peer no_ssl_verify_host are set to yes (default) 
+latter you have the option to ignore insecure certificates and peer.
+If the options no_ssl_verify_peer no_ssl_verify_host are set to yes 
 the module will ignore certificate validity. 
 .PP
-The module sends the contents of a radius packet as an array of strings.
+The \fIrlm_xmlrpc\fP module sends the contents of a radius packet as an array of strings.
 This array is the only parameter that should be accepted by the xmlrpc server.
-The module doesn't split a radius attribute, splitting the attribute in the 
-Name-operand-value form will have tripled xml tags making the http request
-too fat and difficult to process.
 Programmers should tokenize the string on the server side or 
 apply a regular expression.
+.PP
+the \fIrlm_xmlrpc\fP module supports http authentication. The only available methods are basic, digest, ntlm, negotiate.
 .PP
 The main configuration items to be aware of are:
 .IP url
 The url that exposes the callable method.
 .IP method
 The method to be called.
+.IP interface
+Network interface to be used for xmlrpc.
+.IP no_ssl_verify_peer
+The method to be called.
+.IP no_ssl_verify_host
+The method to be called.
+.IP xmlrpc_num_socks
+Numbers of sockets to opened. It should be equal or slightly less than freerasius thread number.
+.IP auth_type
+Http authentication type, "none" if any (default). Possible values are "auth_basic", "auth_digest", 
+"auth_negotiate", "auth_ntlm".
+.IP user
+User to be used in http authentication.
+.IP password
+Password to be used in http authentication.
 .SH CONFIGURATION
 .PP
 .DS
@@ -49,6 +62,10 @@ modules {
     interface = eth0
     no_ssl_verify_peer = yes
     no_ssl_verify_host = yes
+    xmlrpc_num_socks = 5
+    auth_type = auth_digest
+    user = test
+    password = test
 .br
   }
 .br

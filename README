@@ -16,8 +16,15 @@ The rlm_xmlrpc module accepts to talk to http or https server. For the latter yo
 insecure  certificates  and peer, so it could be used without owning a valid certificate.  If the options 
 no_ssl_verify_peer no_ssl_verify_host are set to yes (default) the module will ignore certificate validity.
 
+FEATURES
 
-WRITING AN XMLRPC METHOD
+* XMLRPC compliant, based on xmlrpc_c
+* HTTP an HTTPS support
+* HTTP authentication: basic, digest, negotiate, ntlm
+* Connection pooling and persistent connections
+
+
+WRITING AN XMLRPC REMOTE PROCEDURE
 
 You can write an xmlrpc method whit your preferred technology. Xmlrpc is supported by all major 
 programming languages and it's really simple to use.

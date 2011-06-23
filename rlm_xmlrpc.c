@@ -29,6 +29,8 @@ RCSID("$Id$")
 #include <xmlrpc-c/client.h>
 #define NAME "Freeradius rlm_xmlrpc"
 #define VERSION "0.1"
+#ifdef HAVE_PTHREAD_H
+#endif
 /*
  *	Define a structure for our module configuration.
  *
@@ -54,31 +56,85 @@ typedef struct rlm_xmlrpc_t {
 	int no_ssl_verify_host;
 	int xmlrpc_num_socks;
 	rlm_xmlrpc_client_t *client;
+
+#ifdef HAVE_PTHREAD_H
 	pthread_mutex_t client_mutex;
+#endif
 } rlm_xmlrpc_t;
 
-int check_error(xmlrpc_env * env)
+void free_instance(rlm_xmlrpc_t * instance)
 {
-	if (!env) {
-		radlog(L_ERR, "rlm_xmlrpc: xmlrpc env error");
-		DEBUG("rlm_xmlrpc: xmlrpc env error");
-		return RLM_MODULE_FAIL;
+	rlm_xmlrpc_t *inst = instance;
+
+	rlm_xmlrpc_client_t *next;
+	rlm_xmlrpc_client_t *cur;
+
+	cur = inst->client;
+
+	while (cur->next) {
+		next = cur->next;
+		xmlrpc_env_clean(&cur->env);
+		xmlrpc_server_info_free(cur->serverInfoP);
+		xmlrpc_client_destroy(cur->clientP);
+		free(cur);
+		cur = next;
 	}
+	if (cur) {
+		xmlrpc_env_clean(&cur->env);
+		xmlrpc_server_info_free(cur->serverInfoP);
+		xmlrpc_client_destroy(cur->clientP);
+		free(cur);
+	}
+
+	xmlrpc_client_teardown_global_const();
+
+	pthread_mutex_destroy(&inst->client_mutex);
+	free(inst);
+}
+
+int check_error_and_free(rlm_xmlrpc_t * instance)
+{
+	xmlrpc_env *env = &instance->client->env;
+	char *error = env->fault_string;
 	if (env->fault_occurred) {
-		radlog(L_ERR, "rlm_xmlrpc: %s", env->fault_string);
-		DEBUG("rlm_xmlrpc: %s", env->fault_string);
+		radlog(L_ERR, "rlm_xmlrpc: %s", error);
+		DEBUG("rlm_xmlrpc: %s", error);
+		free_instance(instance);
 		return RLM_MODULE_FAIL;
 	}
 	return RLM_MODULE_OK;
 }
 
+int check_error(xmlrpc_env * env)
+{
+	char *error = env->fault_string;
+	if (env->fault_occurred) {
+		radlog(L_ERR, "rlm_xmlrpc: %s", error);
+		DEBUG("rlm_xmlrpc: %s", error);
+		return RLM_MODULE_FAIL;
+	}
+	return RLM_MODULE_OK;
+}
+
+/*
+ * This method returns a pointer to a client. Thread use this method
+ * to ensure a proper access to a member of the clients linked list.
+ * Mutex is used to grant a round robin access to clients. 
+ */
 rlm_xmlrpc_client_t *get_client(rlm_xmlrpc_t * instance)
 {
 	rlm_xmlrpc_client_t *client;
+
+#ifdef HAVE_PTHREAD_H
 	pthread_mutex_lock(&instance->client_mutex);
+#endif
+
 	client = instance->client;
 	instance->client = instance->client->next;
+
+#ifdef HAVE_PTHREAD_H
 	pthread_mutex_unlock(&instance->client_mutex);
+#endif
 	return client;
 }
 
@@ -95,8 +151,8 @@ static const CONF_PARSER module_config[] = {
 	{"url", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, url), NULL, NULL},
 	{"method", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, method), NULL, NULL},
 	{"interface", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, interface), NULL, "lo"},
-	{"no_ssl_verify_peer", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_peer), NULL, "yes"},
-	{"no_ssl_verify_host", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_host), NULL, "yes"},
+	{"no_ssl_verify_peer", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_peer), NULL, "no"},
+	{"no_ssl_verify_host", PW_TYPE_BOOLEAN, offsetof(rlm_xmlrpc_t, no_ssl_verify_host), NULL, "no"},
 	{"xmlrpc_num_socks", PW_TYPE_INTEGER, offsetof(rlm_xmlrpc_t, xmlrpc_num_socks), NULL, "5"},
 	{"auth_type", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, auth_type), NULL, "none"},
 	{"user", PW_TYPE_STRING_PTR, offsetof(rlm_xmlrpc_t, user), NULL, NULL},
@@ -149,8 +205,16 @@ static int xmlrpc_instantiate(CONF_SECTION * conf, void **instance)
 
 	*instance = data;
 
+#ifdef HAVE_PTHREAD_H
 	pthread_mutex_init(&data->client_mutex, NULL);
+#endif
 
+	/*
+	 * network_interface parameter cannot be omitted because the
+	 * XMLRPC_CXPSIZE macro calcs the size from the first parameter
+	 * to the last modified.
+	 * Unfortunately is this the order. 
+	 */
 	curlParms.network_interface = data->interface;
 	curlParms.no_ssl_verifypeer = data->no_ssl_verify_peer;
 	curlParms.no_ssl_verifyhost = data->no_ssl_verify_host;
@@ -159,6 +223,9 @@ static int xmlrpc_instantiate(CONF_SECTION * conf, void **instance)
 	clientParms.transportparmsP = &curlParms;
 	clientParms.transportparm_size = XMLRPC_CXPSIZE(no_ssl_verifyhost);
 
+	/*
+	 * Choosing method authentication
+	 */
 	if (strcmp(data->auth_type, "auth_basic") == 0) {
 		do_auth = xmlrpc_server_info_allow_auth_basic;
 	} else if (strcmp(data->auth_type, "auth_digest") == 0) {
@@ -169,6 +236,11 @@ static int xmlrpc_instantiate(CONF_SECTION * conf, void **instance)
 		do_auth = xmlrpc_server_info_allow_auth_ntlm;
 	}
 
+	/*
+	 * Clients are created into a circular linked list.
+	 * Into this cycle we setup clients and server information objects.
+	 * Server information contains a method to do html authentication. 
+	 */
 	for (i = 0; i < data->xmlrpc_num_socks; i++) {
 		client = rad_malloc(sizeof(*client));
 		if (!client) {
@@ -193,31 +265,38 @@ static int xmlrpc_instantiate(CONF_SECTION * conf, void **instance)
 				     VERSION, &clientParms,
 				     XMLRPC_CPSIZE(transportparm_size), &client->clientP);
 
-		error = check_error(&env);
+		error = check_error_and_free(data);
 		if (error != RLM_MODULE_OK)
 			return error;
 
 		client->serverInfoP = xmlrpc_server_info_new(&env, data->url);
-		error = check_error(&env);
+		error = check_error_and_free(data);
 		if (error != RLM_MODULE_OK)
 			return error;
 
 		if (strcmp(data->auth_type, "none") != 0) {
 			xmlrpc_server_info_set_user(&env, client->serverInfoP,
 						    data->user, data->password);
-			error = check_error(&env);
+			error = check_error_and_free(data);
 			if (error != RLM_MODULE_OK)
 				return error;
 
 			do_auth(&env, client->serverInfoP);
-			error = check_error(&env);
+			error = check_error_and_free(data);
 			if (error != RLM_MODULE_OK)
 				return error;
+
+			radlog(L_INFO, "\trlm_xmlrpc: client #%d logged in as %s", i, data->user);
 		}
 
 		radlog(L_INFO, "\trlm_xmlrpc: client #%d initialized", i);
 
 	}
+
+	/*
+	 * closing the circular linked list. data->client helds a pointer
+	 * to the last client used by a thread.
+	 */
 
 	data->client->next = first_client;
 	data->client = data->client->next;
@@ -241,13 +320,13 @@ static int xmlrpc_accounting(void *instance, REQUEST * request)
 	char *const methodName = inst->method;
 	int error;
 
-	client = get_client(instance);
-
 	VALUE_PAIR *status_type_pair;
 	if ((status_type_pair = pairfind(request->packet->vps, PW_ACCT_STATUS_TYPE)) == NULL) {
 		radlog(L_ERR, "rlm_xmlrpc: No Accounting-Status-Type record.");
 		return RLM_MODULE_NOOP;
 	}
+
+	client = get_client(instance);
 
 	/*
 	 * Xmlrpc wants method params in an array, so we build an array
@@ -308,38 +387,7 @@ static int xmlrpc_accounting(void *instance, REQUEST * request)
  */
 static int xmlrpc_detach(void *instance)
 {
-	rlm_xmlrpc_t *inst = instance;
-
-	rlm_xmlrpc_client_t *next;
-	rlm_xmlrpc_client_t *cur;
-
-	int i;
-
-	cur = inst->client;
-
-	for (i = 0; i < inst->xmlrpc_num_socks; i++) {
-		if (cur && cur->next) {
-			next = cur->next;
-			xmlrpc_env_clean(&cur->env);
-			xmlrpc_server_info_free(cur->serverInfoP);
-			xmlrpc_client_destroy(cur->clientP);
-			free(cur);
-			cur = next;
-		} else if (cur && !cur->next) {
-			xmlrpc_env_clean(&cur->env);
-			xmlrpc_server_info_free(cur->serverInfoP);
-			xmlrpc_client_destroy(cur->clientP);
-			free(cur);
-		} else {
-			DEBUG("Error freeing xmlrpc module");
-			return -1;
-		}
-		xmlrpc_client_teardown_global_const();
-	}
-
-	pthread_mutex_destroy(&inst->client_mutex);
-	free(inst);
-
+	free_instance(instance);
 	return 0;
 }
 
